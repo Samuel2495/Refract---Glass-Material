@@ -1,0 +1,6 @@
+{
+  "id": "000003",
+  "name": "Refract",
+  "modes": ["canvas", "code"],
+  "icon": "/icon.png"
+}
