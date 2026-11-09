@@ -4,7 +4,7 @@ import { Preview } from "./components/Preview"
 import { BUILT_IN_PRESETS, DEFAULT_PARAMS } from "./presets"
 import { supportsWebGL } from "./support"
 import { loadCustomPresets, saveCustomPresets } from "./storage"
-import { applyGlass } from "./framerApi"
+import { applyGlass, exportNodeImage } from "./framerApi"
 import type { GlassParams, Preset, Thickness } from "./types"
 
 type Tab = "apply" | "adjust"
@@ -15,6 +15,7 @@ export function App() {
   const [presetId, setPresetId] = useState<string>("frosted")
   const [custom, setCustom] = useState<Preset[]>([])
   const [selected, setSelected] = useState(0)
+  const [backdrop, setBackdrop] = useState<string | null>(null)
   const [perfMode, setPerfMode] = useState(false)
   const [naming, setNaming] = useState(false)
   const [name, setName] = useState("")
@@ -26,11 +27,35 @@ export function App() {
   const cssMode = perfMode || !webgl
   const allPresets = [...BUILT_IN_PRESETS, ...custom]
 
-  useEffect(() => framer.subscribeToSelection(nodes => setSelected(nodes.length)), [])
+  // Track selection and export the first selected element as the preview backdrop.
+  useEffect(() => {
+    let seq = 0
+    let current: string | null = null
+    const swap = (url: string | null) => {
+      if (current?.startsWith("blob:")) URL.revokeObjectURL(current)
+      current = url
+      setBackdrop(url)
+    }
+    const off = framer.subscribeToSelection(async nodes => {
+      setSelected(nodes.length)
+      const id = ++seq
+      if (!nodes[0]) return swap(null)
+      const url = await exportNodeImage(nodes[0].id)
+      if (id !== seq) {
+        if (url?.startsWith("blob:")) URL.revokeObjectURL(url)
+        return
+      }
+      swap(url)
+    })
+    return () => {
+      off()
+      if (current?.startsWith("blob:")) URL.revokeObjectURL(current)
+    }
+  }, [])
   useEffect(() => { loadCustomPresets().then(setCustom) }, [])
   useEffect(() => {
     if (!toast) return
-    const t = setTimeout(() => setToast(null), 2200)
+    const t = setTimeout(() => setToast(null), 3500)
     return () => clearTimeout(t)
   }, [toast])
 
@@ -47,9 +72,10 @@ export function App() {
   const apply = useCallback(async () => {
     setBusy(true)
     try {
-      await applyGlass(params, cssMode)
-      setToast("Glass material applied")
+      const note = await applyGlass(params, cssMode)
+      setToast(note ?? "Glass material applied")
     } catch (e) {
+      console.error(e)
       setToast(e instanceof Error ? e.message : "Something went wrong")
     } finally {
       setBusy(false)
@@ -113,7 +139,7 @@ export function App() {
         </div>
       )}
 
-      <Preview params={params} cssMode={cssMode} />
+      <Preview params={params} cssMode={cssMode} backdrop={backdrop} />
       {!webgl && <p className="warn">WebGL not supported. Using CSS blur (performance mode).</p>}
 
       {tab === "apply" && (
