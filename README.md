@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Refract – Glass Material (Framer plugin, MVP v0.1)
 
 ## Run
@@ -30,3 +31,6 @@ Batch apply (v1.1) · Local background removal (v1.2+) · True before/after slid
    the Framer API calls (`createCodeFile`, `addComponentInstance`, `controls`) against
    the framer-plugin version you install; method names shift between versions.
 3. Test chromatic dispersion cost on low-end mobile.
+=======
+# Refract---Glass-Material
+>>>>>>> 51dee3903775e23885205f25622d165c9637251d
