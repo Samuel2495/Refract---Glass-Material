@@ -4,31 +4,168 @@ import type { GlassParams } from "./types"
 
 const FILE_NAME = "RefractGlass.tsx"
 
+function requirePermission(
+  method: Parameters<typeof framer.isAllowedTo>[0],
+  action: string
+) {
+  if (!framer.isAllowedTo(method)) {
+    throw new Error(
+      `You don't have permission to ${action}.`
+    )
+  }
+}
+
 async function ensureCodeFile() {
   const files = await framer.getCodeFiles()
   const existing = files.find(f => f.name === FILE_NAME)
 
   if (existing) {
+    requirePermission(
+      "CodeFile.setFileContent",
+      "update the Refract code component"
+    )
+
     await existing.setFileContent(componentSource)
     return existing
   }
 
+  requirePermission(
+    "createCodeFile",
+    "create the Refract code component"
+  )
+
   return framer.createCodeFile(FILE_NAME, componentSource)
 }
 
-/** Exports the node as an image and returns a URL (or null if unsupported / failed). */
-export async function exportNodeImage(nodeId: string): Promise<string | null> {
+function bytesToUrl(bytes: any, mime?: string): string {
+  return URL.createObjectURL(new Blob([bytes], { type: mime || "image/png" }))
+}
+
+/** Normalises whatever exportImage returns (URL string, {url}, Blob, {bytes|data}) to a URL. */
+function exportResultToUrl(res: any): string | null {
+  if (!res) return null
+  if (typeof res === "string") return res
+  if (typeof res.url === "string") return res.url
+  if (res instanceof Blob) return URL.createObjectURL(res)
+  const bytes = res.bytes ?? res.data
+  return bytes ? bytesToUrl(bytes, res.mimeType) : null
+}
+
+/** Grabs one frame of a video as an image URL (null if blocked by CORS / timeout). */
+function videoFrameUrl(src: string): Promise<string | null> {
+  return new Promise(resolve => {
+    const v = document.createElement("video")
+    let finished = false
+    const done = (u: string | null) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      resolve(u)
+    }
+    const timer = setTimeout(() => done(null), 6000)
+    v.crossOrigin = "anonymous"
+    v.muted = true
+    v.preload = "auto"
+    v.onloadeddata = () => {
+      try {
+        const k = Math.min(1, 1024 / (v.videoWidth || 1024))
+        const c = document.createElement("canvas")
+        c.width = Math.max(1, Math.round(v.videoWidth * k))
+        c.height = Math.max(1, Math.round(v.videoHeight * k))
+        c.getContext("2d")!.drawImage(v, 0, 0, c.width, c.height)
+        c.toBlob(b => done(b ? URL.createObjectURL(b) : null), "image/jpeg", 0.85)
+      } catch {
+        done(null)
+      }
+    }
+    v.onerror = () => done(null)
+    v.src = src
+  })
+}
+
+/** A flat-colour image for frames that only have a background colour. */
+function colorToUrl(color: unknown): string | null {
+  const c = typeof color === "string" ? color : (color as any)?.light
+  if (typeof c !== "string" || !c) return null
   try {
-    const res: any = await (framer as any).exportImage({ nodeId, format: "png", scale: 1 })
-    if (!res) return null
-    if (typeof res === "string") return res
-    if (typeof res.url === "string") return res.url
-    if (res instanceof Blob) return URL.createObjectURL(res)
-    const bytes = res.bytes ?? res.data
-    if (bytes) return URL.createObjectURL(new Blob([bytes], { type: res.mimeType ?? "image/png" }))
-  } catch (e) {
-    console.warn("Refract: could not export selection preview", e)
+    const cv = document.createElement("canvas")
+    cv.width = cv.height = 64
+    const ctx = cv.getContext("2d")!
+    ctx.fillStyle = c
+    ctx.fillRect(0, 0, 64, 64)
+    return cv.toDataURL("image/png")
+  } catch {
+    return null
   }
+}
+
+/**
+ * Returns an image URL representing the selected element, for the live preview backdrop.
+ * Order: image fill → framer.exportImage → video frame → background colour → null.
+ */
+export async function exportNodeImage(nodeId: string): Promise<string | null> {
+  const node: any = await (framer as any).getNode?.(nodeId)
+
+  // 1. Image fill (most reliable: read the asset bytes directly, no CORS issues).
+  try {
+    const asset = node?.backgroundImage
+    if (asset) {
+      if (typeof asset.getData === "function") {
+        const d = await asset.getData()
+        if (d?.bytes) {
+          console.info("Refract preview: image fill (getData)")
+          return bytesToUrl(d.bytes, d.mimeType)
+        }
+      }
+      if (typeof asset.url === "string") {
+        console.info("Refract preview: image fill (url)")
+        return asset.url
+      }
+    }
+  } catch (e) {
+    console.warn("Refract preview: reading image fill failed", e)
+  }
+
+  // 2. Render the node with exportImage (option names differ between framer-plugin versions).
+  const attempts = [
+    { nodeId, type: "png", scale: 1 },
+    { nodeId, format: "png", scale: 1 },
+    { nodeId },
+  ]
+  for (const opts of attempts) {
+    try {
+      const url = exportResultToUrl(await (framer as any).exportImage?.(opts))
+      if (url) {
+        console.info("Refract preview: exportImage", opts)
+        return url
+      }
+    } catch (e) {
+      console.warn("Refract preview: exportImage failed", opts, e)
+    }
+  }
+
+  // 3. Video fill → first frame.
+  try {
+    const vsrc = node?.backgroundVideo?.url
+    if (typeof vsrc === "string") {
+      const url = await videoFrameUrl(vsrc)
+      if (url) {
+        console.info("Refract preview: video frame")
+        return url
+      }
+    }
+  } catch (e) {
+    console.warn("Refract preview: video frame failed", e)
+  }
+
+  // 4. Plain background colour.
+  const flat = colorToUrl(node?.backgroundColor)
+  if (flat) {
+    console.info("Refract preview: background colour")
+    return flat
+  }
+
+  console.warn("Refract preview: no image available for this element", node?.constructor?.name)
   return null
 }
 
@@ -126,19 +263,40 @@ export async function applyGlass(params: GlassParams, performance: boolean): Pro
   const br = parseFloat(String(target.borderRadius ?? ""))
   const controls = { ...params, performance, ...(Number.isFinite(br) ? { radius: br } : {}) }
 
-  const instance: any = await framer.addComponentInstance({
-    url: exp.insertURL,
-    attributes: { controls, ...layout } as any,
-    ...(parent ? { parentId: parent.id } : {}),
-  } as any)
+  requirePermission(
+    "addComponentInstance",
+    "insert a component into the canvas"
+  )
 
-  if (parent) {
-    const actualParent = await instance.getParent?.()
-    if (actualParent?.id !== parent.id) await framer.setParent(instance.id, parent.id)
-  }
+// Insert the glass component.
+requirePermission(
+  "addComponentInstance",
+  "insert a component into the canvas"
+)
 
-  // Apply layout last (re-parenting can reset positioning).
-  await instance.setAttributes(layout)
-  await instance.select()
+const instance = await framer.addComponentInstance({
+  url: exp.insertURL,
+  attributes: { controls, ...layout } as any,
+})
+
+// Place it under the same parent as the selected element.
+if (parent) {
+  requirePermission(
+    "setParent",
+    "place the glass component under the selected element's parent"
+  )
+
+  await framer.setParent(instance.id, parent.id)
+}
+
+// Apply layout after re-parenting.
+requirePermission(
+  "Node.setAttributes",
+  "modify the glass component's layout"
+)
+
+await instance.setAttributes(layout)
+
+await instance.select()
   return note
 }

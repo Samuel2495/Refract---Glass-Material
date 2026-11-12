@@ -1,11 +1,13 @@
+
 export type Thickness = "low" | "medium" | "high"
 
 export interface GlassParams {
-  blur: number // 0 - 40 (px)
-  refraction: number // 0 - 100 (%)
-  dispersion: number // 0 - 100 (%)
+  blur: number
+  refraction: number
+  dispersion: number
+  irregularity: number
   thickness: Thickness
-  tint: number // 0 - 100 (%)
+  tint: number
 }
 
 export interface Preset {
